@@ -12,7 +12,7 @@ from api.services.tools import langchain_tools
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 from langgraph.prebuilt import create_react_agent
-from langgraph.checkpoint.psql import PostgresSaver
+from langgraph.checkpoint.postgres import PostgresSaver
 from psycopg_pool import ConnectionPool
 
 # --- INICIALIZACIÓN DE LA APP Y CORS ---
