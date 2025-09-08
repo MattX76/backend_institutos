@@ -59,28 +59,42 @@ def read_root():
     """Endpoint para verificar que la API está viva y funcionando."""
     return {"status": "ok", "service": "IES Compliance Agent API"}
 
+from fastapi import BackgroundTasks
+from uuid import uuid4
+import asyncio
+
 @app.post("/upload", response_model=UploadResponse)
-async def upload_document(tenant_id: str = Form(...), file: UploadFile = File(...)):
-    """Endpoint para que los clientes suban y procesen sus documentos."""
+async def upload_document(
+    background_tasks: BackgroundTasks,
+    tenant_id: str = Form(...),
+    file: UploadFile = File(...)
+):
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided.")
     try:
-        file_content = await file.read()
-        # La ingestión puede ser un proceso largo, lo ejecutamos en un hilo separado
-        document_id = await asyncio.to_thread(
-            process_and_index_document,
-            tenant_id=tenant_id,
-            file_name=file.filename,
-            file_content=file_content
-        )
+        content = await file.read()
+        doc_id = str(uuid4())
+
+        # process_and_index_document es async → agenda una tarea asíncrona
+        async def runner():
+            await process_and_index_document(
+                tenant_id=tenant_id,
+                file_name=file.filename,
+                file_content=content,
+                document_id=doc_id  # si quieres pasarle el id generado
+            )
+
+        background_tasks.add_task(asyncio.create_task, runner())
+
         return UploadResponse(
-            message="Document indexed successfully",
-            document_id=document_id,
+            message="Document received. Processing in background.",
+            document_id=doc_id,
             tenant_id=tenant_id
         )
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to process document: {str(e)}")
+
 
 @app.post("/query")
 async def handle_query(query_request: QueryRequest = Body(...)):
