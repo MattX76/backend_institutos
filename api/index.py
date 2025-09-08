@@ -95,6 +95,40 @@ async def upload_document(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to process document: {str(e)}")
 
+# api/index.py (añade arriba de handle_query)
+def is_greeting(q: str) -> bool:
+    if not q:
+        return False
+    ql = q.strip().lower()
+    saludos = {
+        "hola","hola!","hola.","buenas","buenas!","buenas tardes","buenas noches",
+        "buenos dias","buenos días","qué tal","que tal","hey","holi","hi","hello"
+    }
+    # match exact o empieza con saludo
+    return ql in saludos or any(ql.startswith(s + " ") for s in saludos)
+
+WELCOME = (
+    "¡Hola! Soy tu asistente de cumplimiento IES. Puedo ayudarte con:\n"
+    "• Requisitos de creación/funcionamiento de IES\n"
+    "• Procesos de registro/calificación de carreras\n"
+    "• Normativa de docentes, estudiantes y gobierno institucional\n"
+    "• Verificación de cumplimiento y checklists\n\n"
+    "Ejemplos que puedo responder:\n"
+    "• “¿Qué requisitos pide [país] para abrir una nueva IES?”\n"
+    "• “Genera un checklist para acreditar la carrera de Derecho”\n"
+    "• “¿Cuál es la carga horaria mínima para Ingeniería?”\n"
+    "• “Resumen de la última reforma del reglamento de evaluación”\n"
+    "Dime tu consulta y el *tenant* correspondiente si aplica."
+)
+async def reformulate_query(orig: str) -> str:
+    # Usa el mismo llm
+    sys = (
+        "Reescribe la consulta para búsqueda normativa IES, "
+        "añadiendo términos clave y sin inventar datos. Devuelve solo la consulta reescrita."
+    )
+    msg = HumanMessage(content=f"Sujeto: normativa IES. Consulta: {orig}")
+    out = await asyncio.to_thread(llm.invoke, [msg])
+    return out.content.strip() if hasattr(out, "content") else orig
 
 @app.post("/query")
 async def handle_query(query_request: QueryRequest = Body(...)):
@@ -102,17 +136,18 @@ async def handle_query(query_request: QueryRequest = Body(...)):
     try:
         thread_id = f"tenant_{query_request.tenant_id}"
         config = {"configurable": {"thread_id": thread_id}}
-        
-        prompt_con_contexto = f"""
-        Eres un asistente experto en normativa de Instituciones de Educación Superior (IES). Tu tarea es responder a la consulta del usuario.
-        Tienes acceso a dos herramientas: 'simple_rag_query' y 'compliance_checklist_generator'.
-        
-        **Instrucciones MUY IMPORTANTES:**
-        1. Para CUALQUIER herramienta que uses, DEBES pasarle el parámetro 'tenant_id'.
-        2. El tenant_id para esta conversación es: '{query_request.tenant_id}'.
-        3. El parámetro 'query' o 'topic' para la herramienta debe ser la pregunta directa del usuario.
+        rq = await reformulate_query(query_request.query)
+        prompt_con_contexto = f"""Eres un asistente experto en normativa de Instituciones de Educación Superior (IES).
+Dispones de dos herramientas: 'simple_rag_query' y 'compliance_checklist_generator'.
 
-        Consulta del usuario: {query_request.query}
+Instrucciones:
+1) Usa RAG sólo si la consulta es normativa o requiere hechos/reglas/documentos.
+2) Si la consulta es ambigua o genérica, pide 1 pregunta aclaratoria breve.
+3) Si no hay fuentes relevantes, explícalo y sugiere cómo reformular la consulta (3 ejemplos).
+4) Siempre incluye el 'tenant_id' = '{query_request.tenant_id}' al usar una herramienta.
+5) Sé conciso, habla en español neutral y ofrece pasos accionables.
+
+Consulta del usuario: {query_request.query}
         """
         
         input_data = {"messages": [HumanMessage(content=prompt_con_contexto)]}
