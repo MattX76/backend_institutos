@@ -64,36 +64,25 @@ from uuid import uuid4
 import asyncio
 
 @app.post("/upload", response_model=UploadResponse)
-async def upload_document(
-    background_tasks: BackgroundTasks,
-    tenant_id: str = Form(...),
-    file: UploadFile = File(...)
-):
+async def upload_document(tenant_id: str = Form(...), file: UploadFile = File(...)):
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided.")
     try:
         content = await file.read()
-        doc_id = str(uuid4())
-
-        # process_and_index_document es async → agenda una tarea asíncrona
-        async def runner():
-            await process_and_index_document(
-                tenant_id=tenant_id,
-                file_name=file.filename,
-                file_content=content,
-                document_id=doc_id  # si quieres pasarle el id generado
-            )
-
-        background_tasks.add_task(asyncio.create_task, runner())
-
+        document_id = await process_and_index_document(
+            tenant_id=tenant_id,
+            file_name=file.filename,
+            file_content=content
+        )
         return UploadResponse(
-            message="Document received. Processing in background.",
-            document_id=doc_id,
+            message="Document indexed successfully",
+            document_id=str(document_id),
             tenant_id=tenant_id
         )
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to process document: {str(e)}")
+
 
 # api/index.py (añade arriba de handle_query)
 def is_greeting(q: str) -> bool:
