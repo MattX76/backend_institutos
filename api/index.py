@@ -34,45 +34,50 @@ from openai import OpenAI
 # Adapter: Responses API como LLM para LangGraph/LangChain
 # ---------------------------
 class ResponsesLLM(Runnable):
-    """Usa OpenAI Responses API como backend LLM, compatible con Project API Keys."""
+    """Usa OpenAI Responses API como backend LLM (project keys)."""
     def __init__(self, model: str):
-        # Toma OPENAI_API_KEY, OPENAI_ORG_ID, OPENAI_PROJECT del entorno
         self.client = OpenAI()
         self.model = model
+        self._bound_tools = None  # opcional: guardamos referencia
 
-    def _to_prompt(self, input_obj: Union[Dict[str, Any], List[Any], str]) -> str:
-        # Acepta formatos típicos de LangChain/LangGraph y los convierte a texto
+    # ⬇️ NUEVO: stub para que LangGraph no falle al crear el agente
+    def bind_tools(self, tools):
+        # Guardamos por si luego quieres implementar tool-calling real
+        self._bound_tools = tools
+        return self
+
+    def _to_prompt(self, input_obj):
         if isinstance(input_obj, str):
             return input_obj
-
         if isinstance(input_obj, dict) and "messages" in input_obj:
             msgs = input_obj["messages"] or []
         elif isinstance(input_obj, list):
             msgs = input_obj
         else:
-            # fallback: representamos todo como string
             return str(input_obj)
 
-        parts: List[str] = []
+        parts = []
         for m in msgs:
+            from langchain_core.messages import HumanMessage
             if isinstance(m, HumanMessage):
                 parts.append(str(m.content))
             elif isinstance(m, dict):
-                # formatos tipo {"type": "human", "content": "..."} o {"content": "..."}
                 t = m.get("type")
                 if t == "human":
                     parts.append(str(m.get("content", "")))
                 elif "content" in m and (t is None or t == "user"):
                     parts.append(str(m["content"]))
             else:
-                # cualquier otro objeto
                 parts.append(str(m))
         return "\n\n".join([p for p in parts if p])
 
-    def invoke(self, input: Union[Dict[str, Any], List[Any], str], config=None, **kwargs) -> AIMessage:
+    def invoke(self, input, config=None, **kwargs):
         prompt = self._to_prompt(input)
+        # Por ahora ignoramos tools en la llamada (stub). Más adelante
+        # podemos pasar tool schemas a Responses API y parsear tool_calls.
         resp = self.client.responses.create(model=self.model, input=prompt)
         return AIMessage(content=resp.output_text or "")
+
 
 
 # ---------------------------
