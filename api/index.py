@@ -1,71 +1,56 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Form, Request
-from api.core.config import settings # Importa settings para cargar variables de entorno
-from api.core.models import UploadResponse, QueryRequest, QueryResponse
-from api.services.ingestion import process_and_index_document
-from api.services.query import query_index
-from llama_index.core.agent import ReActAgent
-from llama_index.core.tools import QueryEngineTool
-from llama_index.llms.openai import OpenAI
-from api.services.query import get_query_engine_for_tenant # Importamos una función factorizada
-from fastapi import FastAPI, HTTPException, Body
-from api.core.config import settings
-from api.core.models import QueryRequest, QueryResponse, SourceNode
-from contextlib import asynccontextmanager
+# api/index.py
+import asyncio
+import traceback
+from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Form
 from fastapi.middleware.cors import CORSMiddleware
+
 from api.core.config import settings
+from api.core.models import UploadResponse, QueryRequest
+from api.services.ingestion import process_and_index_document # Asegúrate de que esta función sea asíncrona
+from api.services.tools import langchain_tools
 
-
-# --- Importaciones de LangChain/LangGraph ---
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 from langgraph.prebuilt import create_react_agent
-from langgraph.checkpoint.postgres import PostgresSaver
+from langgraph.checkpoint.psql import PostgresSaver
 from psycopg_pool import ConnectionPool
-import traceback # <-- Añade esta importación al principio del archivo
-from api.services.tools import langchain_tools
-from psycopg_pool import AsyncConnectionPool
-import asyncio
-from fastapi.middleware.cors import CORSMiddleware
-# Eliminamos el 'lifespan' y volvemos a la inicialización directa y síncrona
+
+# --- INICIALIZACIÓN DE LA APP Y CORS ---
 app = FastAPI(title="IES Compliance Agent API con LangGraph")
-# 2. Configura el middleware de CORS
+
+origins = [
+    "http://localhost:3000",  # Para desarrollo local
+    settings.FRONTEND_URL,    # Para producción en Vercel
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000",settings.FRONTEND_URL,],  # El origen de tu app Next.js en desarrollo
+    allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"], # Permite todos los métodos (GET, POST, etc.)
-    allow_headers=["*"], # Permite todas las cabeceras
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# Paso 1: Crear un pool de conexiones SÍNCRONO, como en tu app original
+# --- INICIALIZACIÓN SÍNCRONA DEL AGENTE ---
 db_pool = ConnectionPool(conninfo=settings.POSTGRES_URI)
-
-# Paso 2: Pasar el pool directamente al constructor de PostgresSaver
 memory = PostgresSaver(db_pool)
-
-# Paso 3: Llamar a .setup() directamente. Esto sí funciona en la versión síncrona.
 memory.setup()
 
-# --- FIN DE LA CORRECCIÓN FINAL ---
-
-# --- Creación del Agente de LangGraph (esto no cambia) ---
 llm = ChatOpenAI(model=settings.LLM_MODEL, temperature=0)
 agent_executor = create_react_agent(llm, langchain_tools, checkpointer=memory)
 
-
-
-
-# --- Configuración de la Memoria Persistente (PostgresSaver) ---
-
+# --- ENDPOINTS ---
+@app.get("/", summary="Health Check")
+def read_root():
+    return {"status": "ok", "service": "IES Compliance Agent API"}
 
 @app.post("/upload", response_model=UploadResponse)
 async def upload_document(tenant_id: str = Form(...), file: UploadFile = File(...)):
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided.")
-    
     try:
         file_content = await file.read()
-        document_id = await process_and_index_document(
+        document_id = await process_and_index_document( # La ingestión puede ser intensiva, la dejamos asíncrona
             tenant_id=tenant_id,
             file_name=file.filename,
             file_content=file_content
@@ -76,8 +61,7 @@ async def upload_document(tenant_id: str = Form(...), file: UploadFile = File(..
             tenant_id=tenant_id
         )
     except Exception as e:
-        # Idealmente, aquí habría un logger más robusto
-        print(f"ERROR during upload: {e}")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to process document: {str(e)}")
 
 @app.post("/query")
@@ -86,13 +70,10 @@ async def handle_query(query_request: QueryRequest = Body(...)):
         thread_id = f"tenant_{query_request.tenant_id}"
         config = {"configurable": {"thread_id": thread_id}}
 
-        # --- INICIO DEL PROMPT MEJORADO ---
-        # Le damos instrucciones mucho más claras al agente sobre cómo debe comportarse
-        # y cómo usar los parámetros de las herramientas.
         prompt_con_contexto = f"""
-        Eres un asistente experto en normativa de Instituciones de Eduación Superior del Ecuador (IES). Tu tarea es responder a la consulta del usuario.
+        Eres un asistente experto en normativa de Instituciones de Educación Superior (IES). Tu tarea es responder a la consulta del usuario.
         Tienes acceso a dos herramientas: 'simple_rag_query' y 'compliance_checklist_generator'.
-        
+
         **Instrucciones MUY IMPORTANTES:**
         1. Para CUALQUIER herramienta que uses, DEBES pasarle el parámetro 'tenant_id'.
         2. El tenant_id para esta conversación es: '{query_request.tenant_id}'.
@@ -100,28 +81,20 @@ async def handle_query(query_request: QueryRequest = Body(...)):
 
         Consulta del usuario: {query_request.query}
         """
-        # --- FIN DEL PROMPT MEJORADO ---
-        
+
         input_data = {"messages": [HumanMessage(content=prompt_con_contexto)]}
-        
+
+        # Usamos asyncio.to_thread para no bloquear la API con la llamada síncrona del agente
         response = await asyncio.to_thread(
             agent_executor.invoke, input_data, config
         )
-        
+
         final_response = response["messages"][-1]
 
         if not final_response:
             raise ValueError("El agente no produjo una respuesta final.")
-        
+
         return {"answer": final_response.content, "sources": []}
-
     except Exception as e:
-        import traceback
-        print("\n--- INICIO DEL TRACEBACK DETALLADO ---")
         traceback.print_exc()
-        print("--- FIN DEL TRACEBACK DETALLADO ---\n")
         raise HTTPException(status_code=500, detail=f"Failed to execute agent query: {str(e)}")
-
-if __name__ == '__main__':
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
