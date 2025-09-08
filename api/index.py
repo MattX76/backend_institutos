@@ -119,3 +119,7 @@ async def handle_query(query_request: QueryRequest = Body(...)):
         traceback.print_exc()
         print("--- FIN DEL TRACEBACK DETALLADO ---\n")
         raise HTTPException(status_code=500, detail=f"Failed to execute agent query: {str(e)}")
+
+if __name__ == '__main__':
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
