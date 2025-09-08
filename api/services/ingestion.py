@@ -10,6 +10,7 @@ from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.readers.file import PagedCSVReader # You might need a specific reader
 from pypdf import PdfReader # Necesitarás instalar pypdf: pip install pypdf
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from elasticsearch import Elasticsearch
 
 from api.core.config import settings
 
@@ -49,14 +50,23 @@ async def process_and_index_document(tenant_id: str, file_name: str, file_conten
     )
 
     # Conexión a Elasticsearch
+    es = Elasticsearch(
+    settings.ES_URL,
+    basic_auth=(settings.ES_USER, settings.ES_PASSWORD),
+    # verify_certs=True, ca_certs=settings.ES_CA_CERT,  # si usas HTTPS con CA propia
+)
+
     vector_store = ElasticsearchStore(
         index_name=settings.ES_INDEX_NAME,
-        es_url=settings.ES_URL,
-        es_user=settings.ES_USER,
-        es_password=settings.ES_PASSWORD,
+        es_client=es,   # <- clave: pasar el cliente autenticado
     )
-    
+
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
+
+
+
+
+
     
     # Indexar el documento (LlamaIndex se encarga del chunking y embeddings)
     VectorStoreIndex.from_documents(
